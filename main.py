@@ -1,62 +1,75 @@
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import JSONResponse
-from datetime import datetime
-import os, uuid, json
+@app.post("/upload")
+async def upload_image(
+    user_id: str = Form(...),
+    meal: str = Form(...),
+    image_file: UploadFile = File(...)
+):
+    # สร้างชื่อไฟล์
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_ext = os.path.splitext(image_file.filename)[-1]
+    filename = f"{user_id}_{timestamp}_{os.urandom(4).hex()}{file_ext}"
+    file_path = os.path.join(UPLOAD_DIR, filename)
 
-app = FastAPI()
+    # บันทึกรูป
+    content = await image_file.read()
+    with open(file_path, "wb") as f:
+        f.write(content)
 
-UPLOAD_DIR = "uploads"
-DATA_DIR = "user_data"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(DATA_DIR, exist_ok=True)
+    # แปลงรูปเป็น base64
+    image_b64 = base64.b64encode(content).decode("utf-8")
 
-@app.get("/")
-def home():
-    return {"message": "Hello, Calories API!"}
+    # ส่งไปยัง GPT
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What food is in this image? Estimate total calories."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
+                ]
+            }
+        ],
+        max_tokens=500,
+    )
 
-# Dummy call GPT (ไว้รอคุณส่ง API Key ค่อยต่อ GPT จริง)
-def mock_calorie_estimate():
-    return {
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "meal": "lunch",
-        "total_calories": 635,
-        "ingredients_estimated": [
-            { "name": "steamed chicken", "calories": 300 },
-            { "name": "rice", "calories": 280 },
-            { "name": "sauce", "calories": 55 }
-        ]
+    text_output = response.choices[0].message.content
+
+    # แปลงข้อความจาก GPT เป็นข้อมูล JSON
+    total_calories = 0
+    ingredients = []
+
+    for line in text_output.split("\n"):
+        if "calories" in line.lower():
+            parts = line.split(":")
+            if len(parts) >= 2:
+                name = parts[0].strip()
+                try:
+                    calories = int(''.join(filter(str.isdigit, parts[1])))
+                    ingredients.append({"name": name, "calories": calories})
+                    total_calories += calories
+                except:
+                    continue
+
+    data = {
+        "date": str(datetime.today().date()),
+        "meal": meal,
+        "total_calories": total_calories,
+        "ingredients_estimated": ingredients,
+        "image_file": filename,
+        "timestamp": datetime.now().isoformat()
     }
 
-@app.post("/upload")
-async def upload_image(user_id: str = Form(...), file: UploadFile = File(...)):
-    now = datetime.now()
-    filename = f"{user_id}_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
-    file_path = os.path.join(UPLOAD_DIR, filename)
-    with open(file_path, "wb") as f:
-        f.write(await file.read())
-
-    calorie_result = mock_calorie_estimate()
-    calorie_result["image_file"] = filename
-    calorie_result["timestamp"] = now.isoformat()
-
-    user_file = os.path.join(DATA_DIR, f"{user_id}.json")
-    history = []
-    if os.path.exists(user_file):
-        with open(user_file, "r") as f:
+    # เขียนข้อมูลลงไฟล์
+    try:
+        with open(DATA_FILE, "r") as f:
             history = json.load(f)
-    history.append(calorie_result)
-    with open(user_file, "w") as f:
+    except:
+        history = {}
+
+    history.setdefault(user_id, []).append(data)
+
+    with open(DATA_FILE, "w") as f:
         json.dump(history, f, indent=2)
 
-    return {"status": "ok", "data": calorie_result}
-
-@app.get("/history")
-def get_history(user_id: str):
-    user_file = os.path.join(DATA_DIR, f"{user_id}.json")
-    if not os.path.exists(user_file):
-        return JSONResponse(content={"history": []}, status_code=200)
-    
-    with open(user_file, "r") as f:
-        history = json.load(f)
-    
-    return {"history": history}
+    return JSONResponse(content={"status": "ok", "data": data})
