@@ -1,6 +1,7 @@
 import os
 import json
 import base64
+import re
 from datetime import datetime
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse
@@ -37,6 +38,7 @@ async def upload_image(
     meal: str = Form(...),
     image_file: UploadFile = File(...)
 ):
+    # Save image
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_ext = os.path.splitext(image_file.filename)[-1]
     filename = f"{user_id}_{timestamp}_{os.urandom(4).hex()}{file_ext}"
@@ -46,15 +48,17 @@ async def upload_image(
     with open(file_path, "wb") as f:
         f.write(content)
 
+    # Convert image to base64
     image_b64 = base64.b64encode(content).decode("utf-8")
 
+    # Query OpenAI
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Please list foods in the image with estimated calories for each item, without including any total summary."},
+                    {"type": "text", "text": "What food is in this image? List each ingredient and estimate its calories. Do not include a total estimate line."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
                 ]
             }
@@ -68,19 +72,24 @@ async def upload_image(
     ingredients = []
 
     for line in text_output.split("\n"):
-        if "calories" in line.lower() and "total" not in line.lower():
-            if any(skip in line.lower() for skip in ["estimated calories", "unsweetened", "if", "sugar", "sweetener"]):
-                continue  # skip irrelevant estimates
+        if not line.strip():
+            continue
 
-            parts = line.split(":")
-            if len(parts) >= 2:
-                name = parts[0].strip().lstrip("-•").strip()
-                try:
-                    calories = int(''.join(filter(str.isdigit, parts[1])))
-                    ingredients.append({"name": name, "calories": calories})
-                    total_calories += calories
-                except:
-                    continue
+        # Skip vague summary lines
+        if "estimated calories" in line.lower() and not any(char.isdigit() for char in line):
+            continue
+
+        match = re.match(r"^(.*?)[\:\-–]\s*(\d+)\s*(?:-|–)?\s*(\d+)?\s*calories?", line, re.IGNORECASE)
+        if match:
+            name = match.group(1).strip(" -•*:.")
+            low = int(match.group(2))
+            high = int(match.group(3)) if match.group(3) else low
+            avg_calories = (low + high) // 2
+
+            # Filter out generic or unclear labels
+            if "estimated calories" not in name.lower():
+                ingredients.append({"name": name, "calories": avg_calories})
+                total_calories += avg_calories
 
     data = {
         "date": str(datetime.today().date()),
