@@ -12,7 +12,6 @@ load_dotenv()
 
 app = FastAPI()
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -38,7 +37,6 @@ async def upload_image(
     meal: str = Form(...),
     image_file: UploadFile = File(...)
 ):
-    # Save image
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_ext = os.path.splitext(image_file.filename)[-1]
     filename = f"{user_id}_{timestamp}_{os.urandom(4).hex()}{file_ext}"
@@ -50,14 +48,13 @@ async def upload_image(
 
     image_b64 = base64.b64encode(content).decode("utf-8")
 
-    # Call OpenAI Vision
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "What food is in this image? Estimate total calories for each item."},
+                    {"type": "text", "text": "Please list foods in the image with estimated calories for each item, without including any total summary."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
                 ]
             }
@@ -72,9 +69,12 @@ async def upload_image(
 
     for line in text_output.split("\n"):
         if "calories" in line.lower() and "total" not in line.lower():
+            if any(skip in line.lower() for skip in ["estimated calories", "unsweetened", "if", "sugar", "sweetener"]):
+                continue  # skip irrelevant estimates
+
             parts = line.split(":")
             if len(parts) >= 2:
-                name = parts[0].strip().lstrip("-").strip()
+                name = parts[0].strip().lstrip("-•").strip()
                 try:
                     calories = int(''.join(filter(str.isdigit, parts[1])))
                     ingredients.append({"name": name, "calories": calories})
@@ -91,7 +91,6 @@ async def upload_image(
         "timestamp": datetime.now().isoformat()
     }
 
-    # Save history
     try:
         with open(DATA_FILE, "r") as f:
             history = json.load(f)
