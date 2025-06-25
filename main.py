@@ -1,7 +1,6 @@
 import os
 import json
 import base64
-import re
 from datetime import datetime
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import JSONResponse
@@ -13,7 +12,7 @@ load_dotenv()
 
 app = FastAPI()
 
-# CORS for local testing or frontend
+# CORS for local testing
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -52,14 +51,14 @@ async def upload_image(
     # Convert image to base64
     image_b64 = base64.b64encode(content).decode("utf-8")
 
-    # Send to OpenAI Vision
+    # Send to ChatGPT Vision
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "What food is in this image? Estimate total calories."},
+                    {"type": "text", "text": "What food is in this image? Estimate total calories for each ingredient."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
                 ]
             }
@@ -71,20 +70,15 @@ async def upload_image(
     total_calories = 0
     ingredients = []
 
-    # Parse the response text for ingredients and calories
     for line in text_output.split("\n"):
         if "calories" in line.lower():
             parts = line.split(":")
             if len(parts) >= 2:
                 name = parts[0].strip()
+                if "total" in name.lower() or "รวม" in name.lower():
+                    continue  # ข้ามบรรทัดรวม
                 try:
-                    numbers = list(map(int, re.findall(r"\d+", parts[1])))
-                    if len(numbers) == 1:
-                        calories = numbers[0]
-                    elif len(numbers) >= 2:
-                        calories = sum(numbers[:2]) // 2  # average of first two numbers
-                    else:
-                        continue
+                    calories = int(''.join(filter(str.isdigit, parts[1])))
                     ingredients.append({"name": name, "calories": calories})
                     total_calories += calories
                 except:
