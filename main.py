@@ -12,7 +12,7 @@ load_dotenv()
 
 app = FastAPI()
 
-# CORS for local testing
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -48,17 +48,16 @@ async def upload_image(
     with open(file_path, "wb") as f:
         f.write(content)
 
-    # Convert image to base64
     image_b64 = base64.b64encode(content).decode("utf-8")
 
-    # Send to ChatGPT Vision
+    # Call OpenAI Vision
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "What food is in this image? Estimate total calories for each ingredient."},
+                    {"type": "text", "text": "What food is in this image? Estimate total calories for each item."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
                 ]
             }
@@ -67,16 +66,15 @@ async def upload_image(
     )
 
     text_output = response.choices[0].message.content
+
     total_calories = 0
     ingredients = []
 
     for line in text_output.split("\n"):
-        if "calories" in line.lower():
+        if "calories" in line.lower() and "total" not in line.lower():
             parts = line.split(":")
             if len(parts) >= 2:
-                name = parts[0].strip()
-                if "total" in name.lower() or "รวม" in name.lower():
-                    continue  # ข้ามบรรทัดรวม
+                name = parts[0].strip().lstrip("-").strip()
                 try:
                     calories = int(''.join(filter(str.isdigit, parts[1])))
                     ingredients.append({"name": name, "calories": calories})
@@ -93,7 +91,7 @@ async def upload_image(
         "timestamp": datetime.now().isoformat()
     }
 
-    # Save to JSON file
+    # Save history
     try:
         with open(DATA_FILE, "r") as f:
             history = json.load(f)
