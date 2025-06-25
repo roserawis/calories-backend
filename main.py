@@ -51,16 +51,27 @@ async def upload_image(
     # Convert image to base64
     image_b64 = base64.b64encode(content).decode("utf-8")
 
-    # Query OpenAI
+    # Ask ChatGPT to list ingredients and calorie estimates
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "What food is in this image? List each ingredient and estimate its calories. Do not include a total estimate line."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
-                ]
+                    {
+                        "type": "text",
+                        "text": (
+                            "Please identify each visible food item in this image "
+                            "and estimate its calories individually. Format:\n"
+                            "- Food item: 100 calories\n"
+                            "Include a line like 'Total estimated calories: 420 calories' if possible."
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                    },
+                ],
             }
         ],
         max_tokens=500,
@@ -72,24 +83,30 @@ async def upload_image(
     ingredients = []
 
     for line in text_output.split("\n"):
-        if not line.strip():
+        if ":" not in line or "calorie" not in line.lower():
             continue
 
-        # Skip vague summary lines
-        if "estimated calories" in line.lower() and not any(char.isdigit() for char in line):
-            continue
+        name_part, cal_part = line.split(":", 1)
+        name = name_part.strip().lstrip("-•0123456789. ").replace("**", "")
 
-        match = re.match(r"^(.*?)[\:\-–]\s*(\d+)\s*(?:-|–)?\s*(\d+)?\s*calories?", line, re.IGNORECASE)
+        # Try to extract calorie value or average from range
+        match = re.search(r"(\d+)\s*[-–]\s*(\d+)", cal_part)
         if match:
-            name = match.group(1).strip(" -•*:.")
-            low = int(match.group(2))
-            high = int(match.group(3)) if match.group(3) else low
-            avg_calories = (low + high) // 2
+            low = int(match.group(1))
+            high = int(match.group(2))
+            cal = (low + high) // 2
+        else:
+            match = re.search(r"(\d+)", cal_part)
+            if match:
+                cal = int(match.group(1))
+            else:
+                continue
 
-            # Filter out generic or unclear labels
-            if "estimated calories" not in name.lower():
-                ingredients.append({"name": name, "calories": avg_calories})
-                total_calories += avg_calories
+        ingredients.append({"name": name, "calories": cal})
+
+        # Count toward total only if not a total/summary line
+        if not any(x in name.lower() for x in ["total", "estimated calories"]):
+            total_calories += cal
 
     data = {
         "date": str(datetime.today().date()),
@@ -97,7 +114,7 @@ async def upload_image(
         "total_calories": total_calories,
         "ingredients_estimated": ingredients,
         "image_file": filename,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
     }
 
     try:
