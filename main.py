@@ -1,24 +1,57 @@
+import os
+import json
+import base64
+from datetime import datetime
+from fastapi import FastAPI, File, UploadFile, Form
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from openai import OpenAI
+from dotenv import load_dotenv
+
+# Load environment variables from .env (local) or Render's envVars
+load_dotenv()
+
+app = FastAPI()
+
+# CORS setup (for local or frontend call)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+UPLOAD_DIR = "uploads"
+DATA_FILE = "user_data/data.json"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs("user_data", exist_ok=True)
+
+@app.get("/")
+def root():
+    return {"message": "Hello, Calories API!"}
+
 @app.post("/upload")
 async def upload_image(
     user_id: str = Form(...),
     meal: str = Form(...),
     image_file: UploadFile = File(...)
 ):
-    # สร้างชื่อไฟล์
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    file_ext = os.path.splitext(image_file.filename)[-1]
-    filename = f"{user_id}_{timestamp}_{os.urandom(4).hex()}{file_ext}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
+    ext = os.path.splitext(image_file.filename)[-1]
+    filename = f"{user_id}_{timestamp}_{os.urandom(4).hex()}{ext}"
+    filepath = os.path.join(UPLOAD_DIR, filename)
 
-    # บันทึกรูป
     content = await image_file.read()
-    with open(file_path, "wb") as f:
+    with open(filepath, "wb") as f:
         f.write(content)
 
-    # แปลงรูปเป็น base64
-    image_b64 = base64.b64encode(content).decode("utf-8")
+    # Convert image to base64
+    b64 = base64.b64encode(content).decode("utf-8")
 
-    # ส่งไปยัง GPT
+    # Send to OpenAI Vision
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
@@ -26,41 +59,40 @@ async def upload_image(
                 "role": "user",
                 "content": [
                     {"type": "text", "text": "What food is in this image? Estimate total calories."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
                 ]
             }
         ],
-        max_tokens=500,
+        max_tokens=500
     )
 
-    text_output = response.choices[0].message.content
+    gpt_text = response.choices[0].message.content
 
-    # แปลงข้อความจาก GPT เป็นข้อมูล JSON
-    total_calories = 0
-    ingredients = []
-
-    for line in text_output.split("\n"):
+    # Extract calories (basic parse)
+    total = 0
+    items = []
+    for line in gpt_text.splitlines():
         if "calories" in line.lower():
             parts = line.split(":")
             if len(parts) >= 2:
                 name = parts[0].strip()
                 try:
-                    calories = int(''.join(filter(str.isdigit, parts[1])))
-                    ingredients.append({"name": name, "calories": calories})
-                    total_calories += calories
+                    cal = int(''.join(filter(str.isdigit, parts[1])))
+                    items.append({"name": name, "calories": cal})
+                    total += cal
                 except:
                     continue
 
     data = {
         "date": str(datetime.today().date()),
         "meal": meal,
-        "total_calories": total_calories,
-        "ingredients_estimated": ingredients,
+        "total_calories": total,
+        "ingredients_estimated": items,
         "image_file": filename,
         "timestamp": datetime.now().isoformat()
     }
 
-    # เขียนข้อมูลลงไฟล์
+    # Save history
     try:
         with open(DATA_FILE, "r") as f:
             history = json.load(f)
@@ -73,3 +105,12 @@ async def upload_image(
         json.dump(history, f, indent=2)
 
     return JSONResponse(content={"status": "ok", "data": data})
+
+@app.get("/history")
+async def get_history(user_id: str):
+    try:
+        with open(DATA_FILE, "r") as f:
+            history = json.load(f)
+        return {"history": history.get(user_id, [])}
+    except:
+        return {"history": []}
